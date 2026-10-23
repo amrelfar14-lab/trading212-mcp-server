@@ -1,31 +1,32 @@
-# Fly.io config: hosted, read-only Trading 212 MCP connector.
-# Set these as Fly secrets (never in this file):
-#   TRADING212_API_KEY, TRADING212_API_SECRET, ENVIRONMENT (live or demo), MCP_SECRET
-# Connector URL for Claude: https://<app-name>.fly.dev/<MCP_SECRET>/mcp
+# fly.toml app configuration file generated for trading212-mcp-server on 2026-10-23T13:23:26Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-primary_region = "lhr"
+app = 'trading212-mcp-server'
+primary_region = 'lhr'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  TRANSPORT = "streamable-http"
-  PORT = "8080"
+  PORT = '8080'
+  TRANSPORT = 'streamable-http'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
 
   [[http_service.checks]]
-    method = "GET"
-    path = "/health"
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "20s"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '20s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = 'shared-cpu-1x'
+  memory = '512mb'
