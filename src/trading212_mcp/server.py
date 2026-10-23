@@ -1,6 +1,9 @@
 """Server factory and CLI. Importing never opens an account client."""
 
+import asyncio
 import logging
+import os
+import re
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -11,11 +14,40 @@ from mcp.server.mcpserver import Context
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, InputRequiredResult
 from pydantic import AnyUrl, ValidationError
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from . import __version__, prompts, resources, tools
 from .cache import META_KEY, observations
 from .client import Trading212Client
+from .errors import Trading212Error
 from .settings import Settings
+
+
+class ReadOnlyTrading212Client(Trading212Client):
+    """Second safety layer: refuse any non-GET call to Trading 212, even if a
+    write tool were somehow still registered."""
+
+    def _make_request(self, method: str, url: str, **kwargs: Any) -> Any:
+        if method.upper() != "GET":
+            raise Trading212Error("This server is read-only; account changes are disabled.")
+        return super()._make_request(method, url, **kwargs)
+
+
+async def _write_tool_names(server: MCPServer[Any]) -> list[str]:
+    return [
+        tool.name
+        for tool in await server.list_tools()
+        if tool.annotations is None or tool.annotations.read_only_hint is not True
+    ]
+
+
+def remove_write_tools(server: MCPServer[Any]) -> list[str]:
+    """Unregister every tool not annotated read-only (orders, pies, exports)."""
+    names = asyncio.run(_write_tool_names(server))
+    for name in names:
+        server.remove_tool(name)
+    return names
 
 
 class TradingServer(MCPServer[Trading212Client]):
@@ -108,8 +140,57 @@ def main() -> None:
         raise SystemExit(
             "Invalid configuration. Check API credentials, ENVIRONMENT, TRANSPORT and cache settings."
         ) from None
-    server = create_server(settings)
-    if settings.transport == "stdio":
+    mcp_secret = os.getenv("MCP_SECRET", "").strip()
+    read_only = bool(mcp_secret) or os.getenv("READ_ONLY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    server = create_server(
+        settings,
+        client_factory=ReadOnlyTrading212Client if read_only else Trading212Client,
+    )
+    if read_only:
+        removed = remove_write_tools(server)
+        logging.getLogger(__name__).warning(
+            "Read-only mode: removed %d write tools (%s)",
+            len(removed),
+            ", ".join(removed),
+        )
+
+    if mcp_secret:
+        # Hosted mode (e.g. Fly.io): listen on all interfaces, and require the
+        # secret in the URL path. Always read-only.
+        if settings.transport != "streamable-http":
+            raise SystemExit("MCP_SECRET requires TRANSPORT=streamable-http.")
+        if len(mcp_secret) < 24 or not re.fullmatch(r"[A-Za-z0-9_-]+", mcp_secret):
+            raise SystemExit(
+                "MCP_SECRET must be at least 24 characters: letters, digits, - or _."
+            )
+
+        @server.custom_route("/health", methods=["GET"])
+        async def health(_: Request) -> JSONResponse:
+            return JSONResponse({"ok": True, "environment": settings.environment})
+
+        port = int(os.getenv("PORT", "8080"))
+        logging.getLogger(__name__).warning(
+            "Hosted mode on port %d; connector URL is https://<your-host>/<MCP_SECRET>/mcp",
+            port,
+        )
+        server.run(
+            transport="streamable-http",
+            host="0.0.0.0",  # noqa: S104 - deliberate in hosted mode
+            port=port,
+            streamable_http_path=f"/{mcp_secret}/mcp",
+            stateless_http=True,
+            json_response=True,
+            # Requests arrive via the host's proxy with its public hostname;
+            # access control is the secret path, not the Host header.
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            ),
+        )
+    elif settings.transport == "stdio":
         server.run(transport="stdio")
     else:
         server.run(
