@@ -134,11 +134,25 @@ def main() -> None:
     )
     for name in ("httpx", "httpcore", "hishel"):
         logging.getLogger(name).setLevel(logging.CRITICAL)
+    # Forgive phone-keyboard habits: capitalised first letters, stray spaces.
+    for name in ("ENVIRONMENT", "TRANSPORT", "READ_ONLY"):
+        if name in os.environ:
+            os.environ[name] = os.environ[name].strip().lower()
+    for name in ("TRADING212_API_KEY", "TRADING212_API_SECRET", "MCP_SECRET"):
+        if name in os.environ:
+            os.environ[name] = os.environ[name].strip()
     try:
         settings = Settings.from_env()
-    except ValidationError:
+    except ValidationError as exc:
+        # Field names only; values are hidden (hide_input_in_errors=True).
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or 'settings'}: {err['msg']}"
+            for err in exc.errors()
+        )
         raise SystemExit(
-            "Invalid configuration. Check API credentials, ENVIRONMENT, TRANSPORT and cache settings."
+            "Invalid configuration (" + problems + "). Expected secrets: "
+            "TRADING212_API_KEY, TRADING212_API_SECRET, "
+            "ENVIRONMENT=live|demo, TRANSPORT=streamable-http, MCP_SECRET."
         ) from None
     mcp_secret = os.getenv("MCP_SECRET", "").strip()
     read_only = bool(mcp_secret) or os.getenv("READ_ONLY", "").strip().lower() in (
